@@ -1,168 +1,104 @@
 package main
 
 import (
-	"encoding/json"
-	"fmt"
+	"errors"
 	"log"
 	"net/http"
-
-	"github.com/google/uuid"
-	"github.com/gorilla/mux"
+	"net/mail"
+	"os"
 	"github.com/joho/godotenv"
+	"github.com/labstack/echo/v4"
+	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 )
+
+
+type Server struct {
+	DB *gorm.DB
+}
 
 func main() {
 	if err := godotenv.Load(); err != nil {
 		log.Fatal(err)
 	}
-
-	fmt.Println(uuid.New())
-
-	r := mux.NewRouter()
-
-	r.HandleFunc("/api/v1/Filess", createFile).Methods("POST")
-	r.HandleFunc("/api/v1/files", getFiles).Methods("GET")
-	r.HandleFunc("/api/v1/files/{id}", getFile).Methods("GET")
-	r.HandleFunc("/api/v1/files/{id}", updateFile).Methods("PATCH")
-	r.HandleFunc("/api/v1/files/{id}", deleteFile).Methods("DELETE")
-
-	// db := connect()
-	// defer db.Close()
-
-	// file := File{MCID: uuid.New()}
-	// fmt.Println(file)
-
-	// Starting Server
-	log.Fatal(http.ListenAndServe(":8000", r))
-}
-
-// Create File
-func createFile(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-
-	// Get Connect
-	db := connect()
-	defer db.Close()
-
-	// Creating File Instance
-	file := &File{
-		MCID: uuid.New().String(),
-	}
-
-	// Decoding Request
-	_ = json.NewDecoder(r.Body).Decode(&file)
-
-	// Inserting Into Database
-	_, err := db.Model(file).Insert()
+	db, err := Connect()
 	if err != nil {
-		log.Println(err)
-		w.WriteHeader(http.StatusBadRequest)
-		return
+		log.Fatal(err)
 	}
 
-	// Returning File
-	json.NewEncoder(w).Encode(file)
-}
-
-// Get Files
-func getFiles(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-
-	// Get Connect
-	db := connect()
-	defer db.Close()
-
-	// Creating Files Slice
-	var files []File
-	if err := db.Model(&files).Select(); err != nil {
-		log.Println(err)
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-
-	// Returning Files
-	json.NewEncoder(w).Encode(files)
-}
-
-// Get File
-func getFile(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-
-	// Get Connect
-	db := connect()
-	defer db.Close()
-
-	// Get MCID
-	params := mux.Vars(r)
-	fileMCID := params["mcid"]
-
-	// Creating file Instance
-	file := &File{MCID: fileMCID}
-	if err := db.Model(file).WherePK().Select(); err != nil {
-		log.Println(err)
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-
-	// Returning file
-	json.NewEncoder(w).Encode(file)
-}
-
-// Update file
-func updateFile(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-
-	// Get Connect
-	db := connect()
-	defer db.Close()
-
-	// Get MCID
-	params := mux.Vars(r)
-	fileMCID := params["mcid"]
-
-	// Creating file Instance
-	file := &File{MCID: fileMCID}
-
-	_ = json.NewDecoder(r.Body).Decode(&file)
-
+	server := &Server{
+		DB: db,
+	}	
 	
-	_, err := db.Model(file).WherePK().Set("MCID = ?, CID = ?, Name = ?, Collection = ?", file.MCID, file.CID, file.Name, file.Collection).Update()
-	if err != nil {
-		log.Println(err)
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
+	e := echo.New()
 
-	// Returning File
-	json.NewEncoder(w).Encode(file)
+	// Routes
+	e.POST("/register", server.createUser)
+
+
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8000"
+	}
+	log.Fatal(e.Start(":" + port))
+	
 }
 
-// Delete File
-func deleteFile(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-
-	// Get Connect
-	db := connect()
-	defer db.Close()
-
-	// Get ID
-	// Get MCID
-	params := mux.Vars(r)
-	fileMCID := params["mcid"]
-
-	// Creating File Instance Alternative Way
-	// file := &File{MCID: fileMCID}
-	// result, err := db.Model(file).WherePK().Delete()
-
-	// Creating File Instance
-	file := &File{}
-	result, err := db.Model(file).Where("id = ?", fileMCID).Delete()
+func (s *Server) createUser(c echo.Context) error {
+	newUser := User {
+		Username: c.FormValue("username"),
+		Email: c.FormValue("email"),
+	}
+	// Check if email is valid
+	_, err := mail.ParseAddress(newUser.Email)
 	if err != nil {
 		log.Println(err)
-		w.WriteHeader(http.StatusBadRequest)
-		return
+		return c.JSON(http.StatusBadRequest, "invalid email format")
+	}
+	// Check if username already exists
+	var userExists User
+	if err := s.DB.Where("username = ?", newUser.Username).First(&userExists).Error; err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			log.Println(err)
+			return c.JSON(http.StatusInternalServerError, err.Error())
+		}
+	} else {
+		return c.JSON(http.StatusBadRequest, "username already exists")
 	}
 
-	// Returning result
-	json.NewEncoder(w).Encode(result)
+	// Check if email already exists
+	if err := s.DB.Where("email = ?", newUser.Email).First(&userExists).Error; err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			log.Println(err)
+			return c.JSON(http.StatusInternalServerError, err.Error())
+		}
+	} else {
+		return c.JSON(http.StatusBadRequest, "email already exists")
+	}
+
+	password := c.FormValue("password")
+	
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		log.Println(err)
+		return c.JSON(http.StatusBadRequest, err.Error())
+	}
+
+	newUser.Password = string(hashedPassword)
+
+	err = s.DB.Create(&newUser).Error
+	if err != nil {
+		log.Println(err)
+		return c.JSON(http.StatusBadRequest, err.Error())
+	}
+
+	response := map[string]interface{}{
+        "id":       newUser.ID,
+        "username": newUser.Username,
+        "email":    newUser.Email,
+    }
+	return c.JSON(http.StatusOK, response)
+
 }
+
+
