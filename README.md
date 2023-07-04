@@ -1,2 +1,2 @@
 # go-backend-template
-Backend Starter Template using GORM and Mux 
+Backend Starter Template using  Eecho and Gorm (with postgress)
